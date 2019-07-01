@@ -166,7 +166,7 @@ KOqkqm57TH2H3eDJAkSnh6/DNFu0Qg==
         in
         wait_for_cert ()
 
-  let retrieve_certificate ?(ca = `Staging) stack ~dns_key ~hostname ?(additional_hostnames = []) ?key_seed dns port =
+  let retrieve_certificate ?(ca = `Staging) stack ~dns_key ~hostname ?(additional_hostnames = Domain_name.Host_set.empty) ?key_seed dns port =
     (match ca with
      | `Staging -> Logs.warn (fun m -> m "staging environment - test use only")
      | `Production -> Logs.warn (fun m -> m "production environment - take care what you do"));
@@ -178,14 +178,12 @@ KOqkqm57TH2H3eDJAkSnh6/DNFu0Qg==
       | Error (`Msg m) -> invalid_arg ("failed to parse dnskey: " ^ m)
     in
     let not_sub subdomain = not (Domain_name.is_subdomain ~subdomain ~domain:zone) in
-    if not_sub hostname || List.exists not_sub additional_hostnames then
+    if not_sub hostname || Domain_name.Host_set.exists not_sub additional_hostnames then
       Lwt.fail_with "hostname not a subdomain of zone provided by dns_key"
     else
       let priv, pub, csr =
-        let host = Domain_name.to_string hostname
-        and additional = Domain_name.Host_set.of_list additional_hostnames
-        in
-        initialise_csr host additional key_seed
+        let host = Domain_name.to_string hostname in
+        initialise_csr host additional_hostnames key_seed
       in
       S.TCPV4.create_connection (S.tcpv4 stack) (dns, port) >>= function
       | Error e ->
