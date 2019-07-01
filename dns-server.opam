@@ -11,6 +11,7 @@ depends: [
   "dune" {build & >= "1.2.0"}
   "ocaml" {>= "4.07.0"}
   "dns" {= version}
+  "domain-name" {>= "0.2.1"}
   "randomconv"
   "duration"
   "alcotest" {with-test}

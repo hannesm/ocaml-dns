@@ -31,9 +31,16 @@ module Authentication = struct
     | `Transfer -> "_transfer"
 
   let is_op op name =
-    (* TODO should check that op is at the beginning? *)
-    let arr = Domain_name.to_array name in
-    Array.exists (String.equal (operation_to_string op)) arr
+    let lbl = operation_to_string op
+    and lbls = Domain_name.count_labels name
+    in
+    let rec one idx =
+      if idx < lbls then
+        String.equal lbl (Domain_name.get_label_exn name idx) || one (succ idx)
+      else
+        false
+    in
+    one 0
 
   let find_zone_ips name =
     (* the name of a key is primaryip.secondaryip._transfer.zone
