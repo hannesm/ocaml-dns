@@ -104,20 +104,30 @@ KOqkqm57TH2H3eDJAkSnh6/DNFu0Qg==
       in
       let key = Nocrypto.Rsa.generate ?g 4096 in
       (if print then
-         let pem = X509.Encoding.Pem.Private_key.to_pem_cstruct1 (`RSA key) in
+         let pem = X509.Private_key.encode_pem (`RSA key) in
          Log.info (fun m -> m "using private key@.%s" (Cstruct.to_string pem))
        else
          ()) ;
       key
     in
     let public_key = `RSA (Nocrypto.Rsa.pub_of_priv private_key) in
-    let extensions = match additionals with
-      | [] -> []
-      | hostnames ->
-        let dns = List.map (fun name -> `DNS name) (hostname :: hostnames) in
-        [ `Extensions [ (false, `Subject_alt_name dns) ] ]
+    let extensions =
+      if Domain_name.Host_set.is_empty additionals then
+        X509.Signing_request.Ext.empty
+      else
+        let ext =
+          let set = Domain_name.Host_set.fold (fun n acc ->
+              Domain_name.(Set.add (raw n) acc)) additionals Domain_name.Set.empty
+          in
+          let gn = X509.General_name.(singleton DNS set) in
+          X509.Extension.(singleton Subject_alt_name (false, gn))
+        in
+        X509.Signing_request.Ext.(singleton Extensions ext)
     in
-    let csr = X509.CA.request [`CN hostname ] ~extensions (`RSA private_key) in
+    let csr =
+      X509.(Signing_request.create Distinguished_name.(singleton CN hostname)
+              ~extensions (`RSA private_key))
+    in
     (private_key, public_key, csr)
 
   let query_certificate_or_csr flow pub hostname keyname zone dnskey csr =
@@ -171,11 +181,12 @@ KOqkqm57TH2H3eDJAkSnh6/DNFu0Qg==
     if not_sub hostname || List.exists not_sub additional_hostnames then
       Lwt.fail_with "hostname not a subdomain of zone provided by dns_key"
     else
-      let host, more =
-        Domain_name.to_string hostname,
-        List.map Domain_name.to_string additional_hostnames
+      let priv, pub, csr =
+        let host = Domain_name.to_string hostname
+        and additional = Domain_name.Host_set.of_list additional_hostnames
+        in
+        initialise_csr host additional key_seed
       in
-      let priv, pub, csr = initialise_csr host more key_seed in
       S.TCPV4.create_connection (S.tcpv4 stack) (dns, port) >>= function
       | Error e ->
         Log.err (fun m -> m "error %a while connecting to name server, shutting down" S.TCPV4.pp_error e) ;
@@ -191,9 +202,7 @@ KOqkqm57TH2H3eDJAkSnh6/DNFu0Qg==
             | `Production -> production
             | `Staging -> staging
           in
-          try
-            let ca = X509.Encoding.Pem.Certificate.of_pem_cstruct1 (Cstruct.of_string ca) in
-            Ok (`Single ([certificate ; ca], priv))
-          with
-          | Invalid_argument str -> Error (`Msg str)
+          match X509.Certificate.decode_pem (Cstruct.of_string ca) with
+          | Ok ca -> Ok (`Single ([certificate ; ca], priv))
+          | Error (`Parse msg) -> Error (`Msg msg)
 end
