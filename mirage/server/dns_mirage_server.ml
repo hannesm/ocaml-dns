@@ -11,12 +11,38 @@ module Make (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_clock_lwt.MCLOCK) (TIME : 
 
   module T = S.TCPV4
 
+  type stat = { mutable udp_recv : int ; mutable tcp_out : int ; mutable total : int ; mutable recv_task : int }
+
+  let stat = { udp_recv = 0 ; tcp_out = 0 ; total = 0 ; recv_task = 0 }
+
+  let metrics =
+    let open Metrics in
+    let doc = "dns mirage server TCP statistics" in
+    let data s =
+      Data.v [ int "stcp connection map size" s.tcp_out ;
+               int "tcp connections" s.total ;
+               int "tcp recv tasks" s.recv_task ;
+               int "udp packets recevied" s.udp_recv ;
+             ]
+    in
+    Src.v ~doc ~tags:Metrics.Tags.[] ~data "dns-mirage-server"
+
+  let m x =
+    (match x with
+     | `Add -> stat.tcp_out <- succ stat.tcp_out
+     | `Remove -> stat.tcp_out <- pred stat.tcp_out
+     | `Task_add -> stat.recv_task <- succ stat.recv_task ; stat.total <- succ stat.total
+     | `Task_remove -> stat.recv_task <- pred stat.recv_task
+     | `Udp -> stat.udp_recv <- succ stat.udp_recv ) ;
+    Metrics.add metrics (fun x -> x) (fun d -> d stat)
+
   let primary ?(on_update = fun ~old:_ _ -> Lwt.return_unit) ?(on_notify = fun _ _ -> Lwt.return None) ?(timer = 2) ?(port = 53) stack t =
     let state = ref t in
     let tcp_out = ref Dns.IM.empty in
 
     let drop ip =
       tcp_out := Dns.IM.remove ip !tcp_out ;
+      m `Remove ;
       state := Dns_server.Primary.closed !state ip
     in
 
@@ -30,6 +56,7 @@ module Make (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_clock_lwt.MCLOCK) (TIME : 
         Lwt.return (Error ())
       | Ok flow ->
         tcp_out := Dns.IM.add ip flow !tcp_out ;
+        m `Add ;
         Lwt.async (recv_task ip dport flow);
         Lwt.return (Ok flow)
     in
@@ -70,6 +97,7 @@ module Make (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_clock_lwt.MCLOCK) (TIME : 
     in
 
     let rec recv_task ip port flow () =
+      m `Task_add ;
       let f = Dns.of_flow flow in
       let rec loop () =
         Dns.read_tcp f >>= function
@@ -79,7 +107,7 @@ module Make (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_clock_lwt.MCLOCK) (TIME : 
           let elapsed = M.elapsed_ns () in
           let t, answer, notify, n = Dns_server.Primary.handle_buf !state now elapsed `Tcp ip port data in
           let n' = match n with
-            | Some `Keep -> tcp_out := Dns.IM.add ip flow !tcp_out ; None
+            | Some `Keep -> tcp_out := Dns.IM.add ip flow !tcp_out ; m `Add ; None
             | Some `Notify soa -> Some (`Notify soa)
             | Some `Signed_notify soa -> Some (`Signed_notify soa)
             | None -> None
@@ -95,7 +123,8 @@ module Make (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_clock_lwt.MCLOCK) (TIME : 
           Lwt_list.iter_p (send_notify recv_task) notify >>= fun () ->
           loop ()
       in
-      loop ()
+      loop () >|= fun () ->
+      m `Task_remove
     in
 
     let tcp_cb flow =
@@ -108,6 +137,7 @@ module Make (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_clock_lwt.MCLOCK) (TIME : 
 
     let udp_cb ~src ~dst:_ ~src_port buf =
       Log.info (fun m -> m "udp frame from %a:%d" Ipaddr.V4.pp src src_port) ;
+      m `Udp ;
       let now = Ptime.v (P.now_d_ps ()) in
       let elapsed = M.elapsed_ns () in
       let t, answer, notify, n = Dns_server.Primary.handle_buf !state now elapsed `Udp src src_port buf in
@@ -156,6 +186,7 @@ module Make (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_clock_lwt.MCLOCK) (TIME : 
        | None -> Lwt.return_unit
        | Some f -> T.close f) >>= fun () ->
       tcp_out := Dns.IM.remove ip !tcp_out ;
+      m `Remove ;
       let now = Ptime.v (P.now_d_ps ()) in
       let elapsed = M.elapsed_ns () in
       let state', out = Dns_server.Secondary.closed !state now elapsed ip in
@@ -208,10 +239,14 @@ module Make (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_clock_lwt.MCLOCK) (TIME : 
             Lwt.return_unit
           | Ok flow ->
             tcp_out := Dns.IM.add ip flow !tcp_out ;
+            m `Add ;
             Dns.send_tcp flow data >>= function
             | Error () -> close ip
             | Ok () ->
-              Lwt.async (fun () -> read_and_handle ip (Dns.of_flow flow)) ;
+              Lwt.async (fun () ->
+                  m `Task_add ;
+                  read_and_handle ip (Dns.of_flow flow) >|= fun () ->
+                  m `Task_remove ) ;
               Lwt.return_unit
         end
       | Some flow ->
@@ -222,10 +257,12 @@ module Make (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_clock_lwt.MCLOCK) (TIME : 
                        Ipaddr.V4.pp ip dport) ;
           T.close flow >>= fun () ->
           tcp_out := Dns.IM.remove ip !tcp_out ;
+          m `Remove ;
           request (proto, ip, data)
     in
 
     let udp_cb ~src ~dst:_ ~src_port buf =
+      m `Udp ;
       Log.info (fun m -> m "udp frame from %a:%d" Ipaddr.V4.pp src src_port) ;
       let now = Ptime.v (P.now_d_ps ()) in
       let elapsed = M.elapsed_ns () in
@@ -240,13 +277,15 @@ module Make (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_clock_lwt.MCLOCK) (TIME : 
     Log.info (fun m -> m "secondary DNS listening on UDP port %d" port) ;
 
     let tcp_cb flow =
+      m `Task_add ;
       let dst_ip, dst_port = T.dst flow in
       tcp_out := Dns.IM.add dst_ip flow !tcp_out ;
+      m `Add ;
       Log.info (fun m -> m "tcp connection from %a:%d" Ipaddr.V4.pp dst_ip dst_port) ;
       let f = Dns.of_flow flow in
       let rec loop () =
         Dns.read_tcp f >>= function
-        | Error () -> tcp_out := Dns.IM.remove dst_ip !tcp_out ; Lwt.return_unit
+        | Error () -> tcp_out := Dns.IM.remove dst_ip !tcp_out ; m `Remove ; Lwt.return_unit
         | Ok data ->
           let now = Ptime.v (P.now_d_ps ()) in
           let elapsed = M.elapsed_ns () in
@@ -262,9 +301,10 @@ module Make (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_clock_lwt.MCLOCK) (TIME : 
           | Some data ->
             Dns.send_tcp flow data >>= function
             | Ok () -> loop ()
-            | Error () -> tcp_out := Dns.IM.remove dst_ip !tcp_out ; Lwt.return_unit
+            | Error () -> tcp_out := Dns.IM.remove dst_ip !tcp_out ; m `Remove ; Lwt.return_unit
       in
-      loop ()
+      loop () >|= fun () ->
+      m `Task_remove
     in
     S.listen_tcpv4 stack ~port tcp_cb ;
     Log.info (fun m -> m "secondary DNS listening on TCP port %d" port) ;
