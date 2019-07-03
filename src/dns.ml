@@ -2917,6 +2917,13 @@ module Packet = struct
     | `Update u, `Update u' -> Update.equal u u'
     | _ -> false
 
+  let request_to_string = function
+    | `Query -> "query"
+    | `Notify _ -> "notify"
+    | `Axfr_request -> "axfr"
+    | `Ixfr_request _ -> "ixfr"
+    | `Update _ -> "update"
+
   let pp_request ppf = function
     | `Query -> Fmt.string ppf "query"
     | `Notify soa -> Fmt.pf ppf "notify %a" Fmt.(option ~none:(unit "no") Soa.pp) soa
@@ -2943,6 +2950,14 @@ module Packet = struct
       Rcode.compare rc rc' = 0 && Opcode.compare op op' = 0 && opt_eq Answer.equal q q'
     | _ -> false
 
+  let reply_to_string = function
+    | `Answer _ -> "answer"
+    | `Notify_ack -> "notify ack"
+    | `Axfr_reply _ -> "axfr reply"
+    | `Ixfr_reply _ -> "ixfr reply"
+    | `Update_ack -> "update ack"
+    | `Rcode_error (rc, _, _) -> Rcode.to_string rc
+
   let pp_reply ppf = function
     | `Answer a -> Answer.pp ppf a
     | `Axfr_reply a -> Axfr.pp ppf a
@@ -2954,6 +2969,10 @@ module Packet = struct
         Fmt.(option ~none:(unit "no data") Answer.pp) q
 
   type data = [ request | reply ]
+
+  let data_to_string = function
+    | #request as r -> request_to_string r
+    | #reply as r -> reply_to_string r
 
   let opcode_data = function
     | `Query | `Answer _
@@ -3053,6 +3072,92 @@ module Packet = struct
     | `Update_ack_authority_count of int
   ]
 
+  let err_to_string = function
+    | `Bad_edns_version _ -> "bad edns version"
+    | `Leftover _ -> "leftover"
+    | `Malformed _ -> "malformed"
+    | `Not_implemented _ -> "not implemented"
+    | `Notify_ack_answer_count _ -> "notify ack answer count"
+    | `Notify_ack_authority_count _ -> "notify ack authority count"
+    | `Notify_answer_count _ -> "notify answer count"
+    | `Notify_authority_count _ -> "notify authority count"
+    | `Partial -> "partial"
+    | `Query_answer_count _ -> "query answer count"
+    | `Query_authority_count _ -> "query authority count"
+    | `Rcode_cant_change _ -> "rcode cant change"
+    | `Rcode_error_cant_noerror _ -> "rcode error cant noerror"
+    | `Request_rcode _ -> "request rcode"
+    | `Truncated_request -> "truncated request"
+    | `Update_ack_answer_count _ -> "update ack answer count"
+    | `Update_ack_authority_count _ -> "update ack authority count"
+
+  module Stat = struct
+    (* data constructors, parse error constructors *)
+    (* edns and tsig counter *)
+    (* query qtype counter *)
+    let create ~f =
+      let data = Hashtbl.create 13 in
+      (fun x ->
+         let key = f x in
+         let cur = match Hashtbl.find_opt data key with
+           | None -> 0
+           | Some x -> x
+         in
+         Hashtbl.replace data key (succ cur)),
+      (fun () ->
+         Hashtbl.fold (fun key value acc ->
+             Metrics.uint key value :: acc)
+           data [])
+
+    let to_string = function
+      | Error err -> err_to_string err
+      | Ok t -> data_to_string t.data
+
+    let counter_metrics ~f name =
+      let open Metrics in
+      let doc = "Counter metrics" in
+      let insert, get = create ~f in
+      let data len = insert len; Data.v (get ()) in
+      Src.v ~doc ~tags:Metrics.Tags.[] ~data name
+
+    let rx = counter_metrics ~f:to_string "dns-rx"
+    let tx = counter_metrics ~f:(fun x -> data_to_string x.data) "dns-tx"
+
+    let rx_qtype =
+      counter_metrics ~f:(fun x ->
+          match Question.qtype x with
+          | None -> "xfr"
+          | Some x -> Fmt.to_to_string Question.pp_qtype x)
+        "dns-rx-qtype"
+
+    (* bucketing of incoming and outgoing packets *)
+    let create ~f min buckets =
+      let b = ref (List.map (fun b -> (b, 0)) buckets) in
+      (fun len ->
+         let _, b' = List.fold_left (fun (last, b) (upper, count) ->
+             let c' = if len > last && len <= upper then succ count else count in
+             (upper, (upper, c') :: b))
+             (min, []) !b
+         in
+         b := List.rev b'),
+      (fun () ->
+         List.rev (List.fold_left (fun acc (upper, count) ->
+             Metrics.uint (f upper) count :: acc)
+             [] !b))
+
+    let buckets = [ 20 ; 50 ; 100 ; 200 ; 400 ; 1484 ; 4000 ; max_int ]
+
+    let bucket_metrics name =
+      let open Metrics in
+      let doc = "DNS Packet byte-length buckets" in
+      let insert, get = create ~f:string_of_int 0 buckets in
+      let data len = insert len; Data.v (get ()) in
+      Src.v ~doc ~tags:Metrics.Tags.[] ~data name
+
+    let rx_bucket = bucket_metrics "dns-rx-bytes"
+    let tx_bucket = bucket_metrics "dns-tx-bytes"
+  end
+
   let pp_err ppf = function
     | `Bad_edns_version version -> Fmt.pf ppf "bad edns version %d" version
     | `Leftover (off, n) -> Fmt.pf ppf "leftover %s at %d" n off
@@ -3097,6 +3202,8 @@ module Packet = struct
     | _ -> Ok rcode
 
   let decode buf =
+    let r =
+    Metrics.add Stat.rx_bucket (fun x -> x) (fun d -> d (Cstruct.len buf));
     let open Rresult.R.Infix in
     Header.decode buf >>= fun (header, query, operation, rcode) ->
     let q_count = Cstruct.BE.get_uint16 buf 4
@@ -3106,6 +3213,7 @@ module Packet = struct
     in
     guard (q_count = 1) (`Malformed (4, "question count not one")) >>= fun () ->
     Question.decode buf >>= fun (question, names, off) ->
+    Metrics.add Stat.rx_qtype (fun x -> x) (fun d -> d question);
     begin
       if query then begin
         (* guard noerror - what's the point in handling error requests *)
@@ -3184,6 +3292,9 @@ module Packet = struct
     (* now in case of error, we may switch the rcode *)
     ext_rcode ~off:off rcode edns >>= with_rcode data >>| fun data ->
     { header ; question ; data ; additional ; edns ; tsig }
+    in
+    Metrics.add Stat.rx (fun x -> x) (fun d -> d r);
+    r
 
   let opcode_match request reply =
     let opa = opcode_data request
@@ -3277,6 +3388,7 @@ module Packet = struct
       off
 
   let encode ?max_size protocol t =
+    Metrics.add Stat.tx (fun x -> x) (fun d -> d t);
     let query = match t.data with #request -> true | #reply -> false in
     let max, edns = size_edns max_size t.edns protocol query in
     let try_encoding buf =
@@ -3313,7 +3425,9 @@ module Packet = struct
         else
           doit next
     in
-    doit (min max 4000) (* (mainly for TCP) we use a page as initial allocation *)
+    let r, off = doit (min max 4000) in (* (mainly for TCP) we use a page as initial allocation *)
+    Metrics.add Stat.tx_bucket (fun x -> x) (fun d -> d (Cstruct.len r));
+    r, off
 
   let raw_error buf rcode =
     (* copy id from header, retain opcode, set rcode to ServFail
@@ -3333,14 +3447,18 @@ module Packet = struct
         (* set rcode *)
         Cstruct.set_uint8 hdr 3 ((Rcode.to_int rcode) land 0xF) ;
         let extended_rcode = Rcode.to_int rcode lsr 4 in
-        if extended_rcode = 0 then
+        if extended_rcode = 0 then begin
+          Metrics.add Stat.tx_bucket (fun x -> x) (fun d -> d 12);
           Some hdr
-        else
+        end else begin
           (* need an edns! *)
           let edns = Edns.create ~extended_rcode () in
           let buf = Edns.allocate_and_encode edns in
           Cstruct.BE.set_uint16 hdr 10 1 ;
-          Some (Cstruct.append hdr buf)
+          let b = Cstruct.append hdr buf in
+          Metrics.add Stat.tx_bucket (fun x -> x) (fun d -> d (Cstruct.len b));
+          Some b
+        end
 end
 
 module Tsig_op = struct
