@@ -677,6 +677,6 @@ let handle_query t ~rng ts qname qtype =
     let name, typ =
       if Domain_name.equal name' qname' then qname, qtype else name', `K typ
     in
-    Logs.debug (fun m -> m "resolve returned zone %a query %a, ip %a"
-                   Domain_name.pp zone pp_question (name, typ) Ipaddr.V4.pp ip);
+    Logs.debug (fun m -> m "resolve returned zone %a query %a (name' %a), ip %a"
+                   Domain_name.pp zone pp_question (name, typ) Domain_name.pp name' Ipaddr.V4.pp ip);
     `Query (zone, (name, typ), ip), t
