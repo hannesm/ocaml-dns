@@ -29,6 +29,3 @@ val timer : t -> int64 ->
     * (Dns.proto * Ipaddr.V4.t * Cstruct.t) list
 (** [timer t now] potentially retransmits DNS requests and/or sends NXDomain
     answers. *)
-
-val stats : t -> unit
-(** [stats t] logs some statistics of the cache. *)

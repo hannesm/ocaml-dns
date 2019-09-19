@@ -147,13 +147,6 @@ module Make (R : Mirage_random.C) (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_cloc
     S.listen_tcpv4 stack ~port (tcp_cb true) ;
     Log.info (fun m -> m "DNS resolver listening on TCP port %d" port) ;
 
-    let rec stats_reporter () =
-      Dns_resolver.stats !state ;
-      TIME.sleep_ns (Duration.of_min 5) >>= fun () ->
-      stats_reporter ()
-    in
-    Lwt.async stats_reporter ;
-
     let rec time () =
       let new_state, answers, queries =
         Dns_resolver.timer !state (M.elapsed_ns ())
