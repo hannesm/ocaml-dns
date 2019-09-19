@@ -65,6 +65,8 @@ type t = {
   mode : [ `Stub | `Recursive ] ;
 }
 
+let server t = t.primary
+
 let create ?(size = 10000) ?(mode = `Recursive) now rng primary =
   let cache = Dns_resolver_cache.empty size in
   let cache =
@@ -225,7 +227,9 @@ let scrub_it mode t proto zone edns ts qtype p =
 let handle_primary t now ts proto sender sport packet _request buf =
   (* makes only sense to ask primary for query=true since we'll never issue questions from primary *)
   let handle_inner name =
-    let t, answer, _, _ = Dns_server.Primary.handle_packet t now ts proto sender sport packet name in
+    let t, answer, _notify, _res =
+      Dns_server.Primary.handle_packet t now ts proto sender sport packet name
+    in
     match answer with
     | None -> `None (* TODO incoming ??? are never replied to - should be revised!? *)
     | Some reply ->

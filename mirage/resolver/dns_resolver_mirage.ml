@@ -19,12 +19,22 @@ module Make (R : Mirage_random.C) (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_cloc
         | x -> x
     end)
 
-  let resolver stack ?(root = false) ?(timer = 500) ?(port = 53) t =
+  let resolver stack ?(on_update = fun ~old:_ _ -> Lwt.return_unit) ?(root = false) ?(timer = 500) ?(port = 53) t =
     (* according to RFC5452 4.5, we can chose source port between 1024-49152 *)
     let sport () = 1024 + Randomconv.int ~bound:48128 R.generate in
     let state = ref t in
     let tcp_in = ref FM.empty in
     let tcp_out = ref Dns.IM.empty in
+
+    let maybe_update_state t =
+      let old = !state in
+      let trie server = Dns_server.Primary.data (Dns_resolver.server server) in
+      state := t;
+      if Dns_trie.equal (trie t) (trie old) then
+        Lwt.return_unit
+      else
+        on_update ~old:(trie old) (Dns_resolver.server t)
+    in
 
     let rec client_out dst port =
       T.create_connection (S.tcpv4 stack) (dst, port) >|= function
@@ -51,7 +61,7 @@ module Make (R : Mirage_random.C) (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_cloc
                 let new_state, answers, queries =
                   Dns_resolver.handle_buf !state now ts false `Tcp dst port data
                 in
-                state := new_state ;
+                maybe_update_state new_state >>= fun () ->
                 Lwt_list.iter_p handle_answer answers >>= fun () ->
                 Lwt_list.iter_p handle_query queries >>= fun () ->
                 loop ()
@@ -104,7 +114,7 @@ module Make (R : Mirage_random.C) (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_cloc
       let new_state, answers, queries =
         Dns_resolver.handle_buf !state now ts req `Udp src src_port buf
       in
-      state := new_state ;
+      maybe_update_state new_state >>= fun () ->
       Lwt_list.iter_p handle_answer answers >>= fun () ->
       Lwt_list.iter_p handle_query queries
     in
@@ -127,7 +137,7 @@ module Make (R : Mirage_random.C) (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_cloc
           let new_state, answers, queries =
             Dns_resolver.handle_buf !state now ts query `Tcp dst_ip dst_port data
           in
-          state := new_state ;
+          maybe_update_state new_state >>= fun () ->
           Lwt_list.iter_p handle_answer answers >>= fun () ->
           Lwt_list.iter_p handle_query queries >>= fun () ->
           loop ()
@@ -148,7 +158,7 @@ module Make (R : Mirage_random.C) (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_cloc
       let new_state, answers, queries =
         Dns_resolver.timer !state (M.elapsed_ns ())
       in
-      state := new_state ;
+      maybe_update_state new_state >>= fun () ->
       Lwt_list.iter_p handle_answer answers >>= fun () ->
       Lwt_list.iter_p handle_query queries >>= fun () ->
       TIME.sleep_ns (Duration.of_ms timer) >>= fun () ->
@@ -159,7 +169,7 @@ module Make (R : Mirage_random.C) (P : Mirage_clock_lwt.PCLOCK) (M : Mirage_cloc
     if root then
       let rec root () =
         let new_state, q = Dns_resolver.query_root !state (M.elapsed_ns ()) `Tcp in
-        state := new_state ;
+        maybe_update_state new_state >>= fun () ->
         handle_query q >>= fun () ->
         TIME.sleep_ns (Duration.of_day 6) >>= fun () ->
         root ()

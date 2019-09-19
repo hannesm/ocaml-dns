@@ -17,6 +17,8 @@ val handle_buf : t -> Ptime.t -> int64 -> bool -> Dns.proto -> Ipaddr.V4.t ->
    transmitted (quadruple of protocol, ip address, port, buffer), and a list of
    queries (triple of protocol, ip address, buffer). *)
 
+val server : t -> Dns_server.Primary.s
+
 val query_root : t -> int64 -> Dns.proto ->
   t * (Dns.proto * Ipaddr.V4.t * Cstruct.t)
 (** [query_root t now proto] potentially requests an update of the root
