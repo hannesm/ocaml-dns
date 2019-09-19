@@ -16,12 +16,6 @@ val compare_rank : rank -> rank -> int
 
 type t
 
-type stats
-
-val pp_stats : stats Fmt.t
-
-val stats : unit -> stats
-
 val empty : int -> t
 
 val size : t -> int

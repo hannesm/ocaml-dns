@@ -110,12 +110,20 @@ type stats = {
   insert : int ;
 }
 
+let metrics =
+  let open Metrics in
+  let doc = "dns resolver cache statistics" in
+  let data s =
+    Data.v [ int "hit" s.hit ; int "miss" s.miss ; int "drop" s.drop ; int "insert" s.insert ]
+  in
+  Src.v ~doc ~tags:Metrics.Tags.[] ~data "dns-resolver-cache"
+
 let s = ref { hit = 0 ; miss = 0 ; drop = 0 ; insert = 0 }
 
-let pp_stats pf s =
-  Fmt.pf pf "cache: %d hits %d misses %d drops %d inserts" s.hit s.miss s.drop s.insert
+let stats ns =
+  s := ns;
+  Metrics.add metrics (fun x -> x) (fun d -> d ns)
 
-let stats () = !s
 
 (* this could need a `Timeout error result *)
 
@@ -177,7 +185,7 @@ let find_lru t name typ =
     | Not_found -> Error `Cache_miss
 
 let insert_lru t ?map name typ created rank res =
-  s := { !s with insert = succ !s.insert };
+  stats { !s with insert = succ !s.insert };
   let meta = created, rank in
   let t' = match res with
     | `No_domain (name', soa) -> LRU.add name (No_domain (meta, name', soa)) t
@@ -197,15 +205,15 @@ let update_ttl_res e ~created ~now =
 let cached t now typ nam =
   match snd (find_lru t nam typ) with
   | Error e ->
-    s := { !s with miss = succ !s.miss };
+    stats { !s with miss = succ !s.miss };
     Error e
   | Ok ((created, _), e) ->
     match update_ttl_res e ~created ~now with
     | Ok e' ->
-      s := { !s with hit = succ !s.hit };
+      stats { !s with hit = succ !s.hit };
       Ok (e', LRU.promote nam t)
     | Error e ->
-      s := { !s with drop = succ !s.drop };
+      stats { !s with drop = succ !s.drop };
       Error e
 
 let cached_any t now nam =
@@ -221,23 +229,23 @@ let cached_any t now nam =
         rrmap Rr_map.empty
     in
     if Rr_map.is_empty rrs then begin
-      s := { !s with miss = succ !s.miss };
+      stats { !s with miss = succ !s.miss };
       Error `Cache_miss
     end else begin
-      s := { !s with hit = succ !s.hit };
+      stats { !s with hit = succ !s.hit };
       Ok (`Entries rrs, LRU.promote nam t)
     end
   | _, Error e ->
-    s := { !s with miss = succ !s.miss };
+    stats { !s with miss = succ !s.miss };
     Error e
   | _, Ok ((created, _), e) ->
     let ttl = get_ttl e in
     let updated_ttl = update_ttl ~created ~now ttl in
     if updated_ttl < 0l then begin
-      s := { !s with drop = succ !s.drop };
+      stats { !s with drop = succ !s.drop };
       Error `Cache_drop
     end else begin
-      s := { !s with hit = succ !s.hit };
+      stats { !s with hit = succ !s.hit };
       Ok (with_ttl updated_ttl e, LRU.promote nam t)
     end
 
