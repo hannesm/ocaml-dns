@@ -32,7 +32,7 @@ type stats = {
   retransmits : int ;
   total_out : int ;
   max_out : int ;
-  total_time : int64 ;
+  total_time : float ;
   max_time : int64 ;
   drop_timeout : int ;
   drop_send : int ;
@@ -45,7 +45,7 @@ let empty_stats () = {
   authoritative = 0 ; delegation = 0 ;
   errors = 0 ; drops = 0 ; retransmits = 0 ;
   total_out = 0 ; max_out = 0 ; drop_timeout = 0 ; drop_send = 0 ;
-  retry_edns = 0 ; total_time = 0L ; max_time = 0L ; tcp_upgrade = 0 ;
+  retry_edns = 0 ; total_time = 0. ; max_time = 0L ; tcp_upgrade = 0 ;
 }
 
 let metrics =
@@ -54,7 +54,7 @@ let metrics =
   let data s =
     let avg_out = if s.answers = 0 then 0. else float_of_int s.total_out /. float_of_int s.answers in
     let max_time = Duration.to_f s.max_time
-    and avg_time = if s.answers = 0 then 0. else Int64.to_float s.total_time /. float_of_int s.answers in
+    and avg_time = if s.answers = 0 then 0. else s.total_time /. float_of_int s.answers in
     Data.v [ int "questions" s.questions ;
              int "answers" s.answers ;
              int "responses" s.responses ;
@@ -215,7 +215,7 @@ let handle_query t its out ?(retry = 0) proto edns from port ts qname qtype qid 
       stats { !s with
              answers = succ !s.answers ;
              max_out ; total_out = !s.total_out + out ;
-             max_time ; total_time = Int64.add !s.total_time time ;
+             max_time ; total_time = !s.total_time +. Duration.to_f time ;
            } ;
       let max_size, edns = Edns.reply edns in
       let packet = Packet.create ?edns (qid, flags) ((qname, qtype) :> Packet.Question.t) (a :> Packet.data) in
