@@ -149,6 +149,7 @@ let build_query ?id ?(recursion_desired = false) t ts proto question retry zone 
 let maybe_query ?recursion_desired t ts retry out ip name typ (proto, zone, edns, orig_s, orig_p, orig_q, orig_id) =
   let k = (name, typ) in
   let await = (ts, succ out, proto, zone, edns, orig_s, orig_p, orig_q, orig_id) in
+  Logs.debug (fun m -> m "adding for %a: %a" Domain_name.pp name Domain_name.pp (fst orig_q));
   if QM.mem k t.queried then
     let t = { t with queried = QM.add k (await :: QM.find k t.queried) t.queried } in
     `Nothing, t
