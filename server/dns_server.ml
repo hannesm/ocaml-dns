@@ -659,6 +659,8 @@ let update_data trie zone (prereq, update) =
         (Ok ()) prereqs)
     prereq (Ok ()) >>= fun () ->
   Domain_name.Map.fold (fun name updates acc ->
+      Log.info (fun m -> m "update for %a (%d)"
+                   Domain_name.pp name (List.length updates));
       acc >>= fun (trie, zones) ->
       guard (in_zone name) Rcode.NotZone >>| fun () ->
       let zones' = match Dns_trie.zone name trie with
@@ -701,7 +703,8 @@ let update_data trie zone (prereq, update) =
 
 let handle_update t proto key (zone, _) u =
   if Authentication.authorise t.auth proto ?key ~zone `Update then begin
-    Log.info (fun m -> m "update key %a authorised for update %a"
+    Log.info (fun m -> m "update key %a authorised for update (zone %a) %a!"
+                 Domain_name.pp zone
                  Fmt.(option ~none:(unit "none") Domain_name.pp) key
                  Packet.Update.pp u);
     match Domain_name.host zone with
