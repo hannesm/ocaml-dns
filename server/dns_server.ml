@@ -672,27 +672,36 @@ let update_data trie zone (prereq, update) =
       and trie' = List.fold_left (handle_rr_update name) trie updates in
       trie', zones')
     update (Ok (trie, Domain_name.Set.empty)) >>= fun (trie', zones) ->
+  Log.info (fun m -> m "zones is %d: %a" (Domain_name.Set.cardinal zones)
+               Fmt.(list ~sep:(unit " ") Domain_name.pp) (Domain_name.Set.elements zones));
   (match Dns_trie.check trie' with
    | Ok () -> Ok ()
    | Error e ->
      Log.err (fun m -> m "check after update returned %a"
                  Dns_trie.pp_zone_check e);
      Error Rcode.YXRRSet) >>= fun () ->
-  if Dns_trie.equal trie trie' then
+  if Dns_trie.equal trie trie' then begin
+    Log.info (fun m -> m "trie and trie' are equal!");
     (* should this error out? - RFC 2136 3.4.2.7 says NoError at the end *)
     Ok (trie, [])
-  else
+  end else
     Domain_name.Set.fold (fun zone acc ->
         acc >>= fun (trie', zones) ->
         match Dns_trie.lookup zone Soa trie, Dns_trie.lookup zone Soa trie' with
         | Ok oldsoa, Ok soa when Soa.newer ~old:oldsoa soa ->
+          Log.info (fun m -> m "soa for %a already newer!"
+                       Domain_name.pp zone);
           Ok (trie', (zone, soa) :: zones)
         | _, Ok soa ->
           let soa = { soa with Soa.serial = Int32.succ soa.Soa.serial } in
           let trie'' = Dns_trie.insert zone Soa soa trie' in
+          Log.info (fun m -> m "incremented soa for %a!"
+                       Domain_name.pp zone);
           Ok (trie'', (zone, soa) :: zones)
         | Ok oldsoa, Error _ ->
           (* zone removal!? *)
+          Log.info (fun m -> m "incremented soa for %a (zone removed!?)!"
+                       Domain_name.pp zone);
           let serial = Int32.succ oldsoa.Soa.serial in
           Ok (trie', (zone, { oldsoa with Soa.serial }) :: zones)
         | Error o, Error n ->
