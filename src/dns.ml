@@ -1088,6 +1088,63 @@ module Ds = struct
     names, off + Cstruct.length t.digest + 4
 end
 
+module Nsec = struct
+
+  module I = Set.Make(struct type t = int let compare (a : int) (b : int) = compare end)
+
+  type t = {
+    next_domain : [`raw] Domain_name.t;
+    types : I.t;
+  }
+
+  (block # | length (of data) | N octets of data )*
+   ^ 0-255    ^ 1-32              ^ N octets
+   0: 0-255 RRTYPE 
+   1: 256-511 RRTYPE
+
+   A record has RRTYPE=1
+   MX record has RRTYPE=15
+   bit 15 is set and bit 1 is set
+   0b1000 0000 0000 0001 -> 0x10 0x01
+   0x00 0x02 0x10 0x01
+
+  let pp ppf { next_domain ; types } =
+    Fmt.pf ppf "NSEC %a: %a" Domain_name.pp next_domain
+      Fmt.(list ~sep:(any " ") int) (I.elements types)
+  
+  let compare a b =
+    andThen (Domain_name.compare a.next_domain b.next_domain)
+      (I.compare a.types b.types)
+
+  let bits byte =
+    let b n = (1 lsl (n - 1)) land byte > 0 in
+    List.filter b [ 1; 2; 3; 4; 5; 6; 7; 8 ]
+
+  let decode_exn names buf ~off ~len =
+    let* next_domain, names, off' = Name.decode names buf ~off in
+    let rec decode_bit_map_field idx acc =
+      if idx - off = len then
+        acc
+      else
+        let block = Cstruct.get_uint8 buf idx in
+        let length = Cstruct.get_uint8 buf (idx + 1) in
+        (* compute the types from the bits *)
+        let s = idx + 2 in
+        let rec octet factor idx =
+          let bits = bits (Cstruct.get_uint8 buf (s + idx)) in
+          let more = if idx = 0 then I.empty else octet (factor + 1) (idx - 1) in
+          List.fold_left (fun acc b -> I.add (factor * 8 + b) acc) more bits
+        in
+        let bits = octet 0 length in
+        decode_bit_map_field (s + length)
+          (I.union (I.map (fun b -> b + block * 256) bits) acc)
+    in
+    decode_bit_map_field off' []
+
+  let encode t names buf off =
+    let names, off = Name.encode ~compress:false t.signer_name names buf (off + 18) in
+end
+
 (* certificate authority authorization *)
 module Caa = struct
   type t = {
@@ -1896,7 +1953,7 @@ module Rr_map = struct
   end = struct
     type t = int
     let of_int ?(off = 0) i = match i with
-      | 1 | 2 | 5 | 6 | 12 | 15 | 16 | 28 | 33 | 41 | 43 | 44 | 46 | 48 | 52 | 250 | 251 | 252 | 255 | 257 ->
+      | 1 | 2 | 5 | 6 | 12 | 15 | 16 | 28 | 33 | 41 | 43 | 44 | 46 | 47 | 48 | 52 | 250 | 251 | 252 | 255 | 257 ->
         Error (`Malformed (off, "reserved and supported RTYPE not Unknown"))
       | x -> if x < 1 lsl 15 then Ok x else Error (`Malformed (off, "RTYPE exceeds 16 bit"))
     let to_int t = t
@@ -1982,7 +2039,7 @@ module Rr_map = struct
   let to_int : type a. a key -> int = function
     | A -> 1 | Ns -> 2 | Cname -> 5 | Soa -> 6 | Ptr -> 12 | Mx -> 15
     | Txt -> 16 | Aaaa -> 28 | Srv -> 33 | Ds -> 43 | Sshfp -> 44
-    | Rrsig -> 46 | Dnskey -> 48 | Tlsa -> 52 | Caa -> 257
+    | Rrsig -> 46 | Nsec -> 47 | Dnskey -> 48 | Tlsa -> 52 | Caa -> 257
     | Unknown x -> I.to_int x
 
   let any_rtyp = 255 and axfr_rtyp = 252 and ixfr_rtyp = 251
@@ -1991,7 +2048,7 @@ module Rr_map = struct
     | 1 -> Ok (K A) | 2 -> Ok (K Ns) | 5 -> Ok (K Cname) | 6 -> Ok (K Soa)
     | 12 -> Ok (K Ptr) | 15 -> Ok (K Mx) | 16 -> Ok (K Txt) | 28 -> Ok (K Aaaa)
     | 33 -> Ok (K Srv) | 43 -> Ok (K Ds) | 44 -> Ok (K Sshfp)
-    | 46 -> Ok (K Rrsig) | 48 -> Ok (K Dnskey) | 52 -> Ok (K Tlsa)
+    | 46 -> Ok (K Rrsig) | 47 -> Ok (K Nsec) | 48 -> Ok (K Dnskey) | 52 -> Ok (K Tlsa)
     | 257 -> Ok (K Caa)
     | x ->
       let* i = I.of_int ~off x in
@@ -2013,6 +2070,7 @@ module Rr_map = struct
     | Sshfp -> Fmt.string ppf "SSHFP"
     | Ds -> Fmt.string ppf "DS"
     | Rrsig -> Fmt.string ppf "RRSIG"
+    | Nsec -> Fmt.string ppf "NSEC"
     | Unknown x -> Fmt.pf ppf "TYPE%d" (I.to_int x)
 
   type rrtyp = [ `Any | `Tsig | `Edns | `Ixfr | `Axfr | `K of k ]
