@@ -1334,6 +1334,11 @@ module Secondary = struct
     t, IPM.bindings out
 
   let handle_notify t zones now ts ip zone typ notify keyname =
+    (* The <ip> is the IP address of the incoming packet. This IP address is
+       only used in case it was a signed SOA with a good key, in which case that
+       IP address is stored in the zones table (this is crucial for the let's
+       encrypt secondary with zero configuration). All other paths use the
+       already saved IP address in the zones table. *)
     match typ with
     | `K (Rr_map.K Soa) ->
       begin match Domain_name.Host_map.find zone zones, keyname with
@@ -1355,88 +1360,80 @@ module Secondary = struct
             in
             Ok r
           else begin
-            Log.warn (fun m -> m "ignoring notify %a (key %a) not authorised"
-                         Domain_name.pp zone Domain_name.pp kname);
+            Log.warn (fun m -> m "ignoring notify %a from %a (key %a) not authorised"
+                         Domain_name.pp zone Ipaddr.pp ip Domain_name.pp kname);
             Error Rcode.Refused
           end
-        | Some (Transferred _, ip', name), None ->
-          if Ipaddr.compare ip ip' = 0 then begin
-            Log.debug (fun m -> m "received notify %a, requesting SOA"
-                          Domain_name.pp zone);
-            let zones, out =
-              match query_soa t now ts zone name with
-              | None -> zones, None
-              | Some (st, buf) ->
-                Domain_name.Host_map.add zone (st, ip, name) zones,
-                Some (ip, buf)
-            in
-            Ok (zones, out)
-          end else begin
-            Log.warn (fun m -> m "ignoring notify %a from %a (%a is primary)"
-                         Domain_name.pp zone Ipaddr.pp ip Ipaddr.pp ip');
-            Error Rcode.Refused
-          end
+        | Some (Transferred _, ip, name), None ->
+          Log.debug (fun m -> m "received unsigned notify %a, req SOA %a"
+                        Domain_name.pp zone Ipaddr.pp ip);
+          let zones, out =
+            match query_soa t now ts zone name with
+            | None -> zones, None
+            | Some (st, buf) ->
+              Domain_name.Host_map.add zone (st, ip, name) zones,
+              Some (ip, buf)
+          in
+          Ok (zones, out)
         | Some _, None ->
-          Log.warn (fun m -> m "received unsigned notify %a already in progress"
-                       Domain_name.pp zone);
+          Log.warn (fun m -> m "received unsigned notify %a from %a, already in progress"
+                       Domain_name.pp zone Ipaddr.pp ip);
           Ok (zones, None)
-        | Some (st, ip', name), Some _ ->
-          if Ipaddr.compare ip ip' = 0 then begin
-            (* we received a signed notify! check if SOA present, and act *)
-            match st, notify, Dns_trie.lookup zone Rr_map.Soa t.data with
-            | Transferred _, None, _ ->
-              begin match query_soa t now ts zone name with
-                | None ->
-                  Log.warn (fun m -> m "signed notify %a, couldn't sign soa?"
-                               Domain_name.pp zone);
-                  Ok (zones, None)
-                | Some (st, buf) ->
-                  Ok (Domain_name.Host_map.add zone (st, ip, name) zones,
-                      Some (ip, buf))
+        | Some (st, ip, name), Some _ ->
+          (* we received a signed notify! check if SOA present, and act *)
+          Log.debug (fun m -> m "received signed notify %a, req SOA %a"
+                        Domain_name.pp zone Ipaddr.pp ip);
+          match st, notify, Dns_trie.lookup zone Rr_map.Soa t.data with
+          | Transferred _, None, _ ->
+            begin match query_soa t now ts zone name with
+              | None ->
+                Log.warn (fun m -> m "signed notify %a from %a, couldn't sign soa?"
+                             Domain_name.pp zone Ipaddr.pp ip);
+                Ok (zones, None)
+              | Some (st, buf) ->
+                Ok (Domain_name.Host_map.add zone (st, ip, name) zones,
+                    Some (ip, buf))
               end
-            | _, None, _ ->
-              Log.warn (fun m -> m "signed notify %a no SOA already in progress"
-                           Domain_name.pp zone);
-              Ok (zones, None)
-            | _, Some soa, Error _ ->
-              Log.info (fun m -> m "signed notify %a soa %a no local SOA"
-                           Domain_name.pp zone Soa.pp soa);
-              begin match axfr t now ts zone name with
-                | None ->
-                  Log.warn (fun m -> m "signed notify for %a couldn't sign axfr"
-                               Domain_name.pp zone);
-                  Ok (zones, None)
-                | Some (st, buf) ->
-                  Ok (Domain_name.Host_map.add zone (st, ip, name) zones,
-                      Some (ip, buf))
-              end
-            | _, Some soa, Ok old ->
-              if Soa.newer ~old soa then
-                match ixfr t now ts zone old name with
-                  | None ->
-                    Log.warn (fun m -> m "signed notify %a couldn't sign ixfr"
-                                 Domain_name.pp zone);
-                    Ok (zones, None)
-                  | Some (st, buf) ->
-                    Log.info (fun m -> m "signed notify %a, ixfr"
-                                 Domain_name.pp zone);
-                    Ok (Domain_name.Host_map.add zone (st, ip, name) zones,
-                        Some (ip, buf))
-              else begin
-                Log.warn (fun m -> m "signed notify %a with SOA %a not newer %a"
-                             Domain_name.pp zone Soa.pp soa Soa.pp old);
-                let st = Transferred ts, ip, name in
-                Ok (Domain_name.Host_map.add zone st zones, None)
-              end
-          end else begin
-            Log.warn (fun m -> m "ignoring notify %a from %a (%a is primary)"
-                         Domain_name.pp zone Ipaddr.pp ip Ipaddr.pp ip');
-            Error Rcode.Refused
-          end
+          | _, None, _ ->
+            Log.warn (fun m -> m "signed notify %a from %a no SOA already in progress"
+                         Domain_name.pp zone Ipaddr.pp ip);
+            Ok (zones, None)
+          | _, Some soa, Error _ ->
+            Log.info (fun m -> m "signed notify %a from %a SOA %a no local SOA (doing AXFR)"
+                           Domain_name.pp zone Ipaddr.pp ip Soa.pp soa);
+            begin match axfr t now ts zone name with
+              | None ->
+                Log.warn (fun m -> m "signed notify for %a from %a couldn't sign axfr"
+                             Domain_name.pp zone Ipaddr.pp ip);
+                Ok (zones, None)
+              | Some (st, buf) ->
+                Log.debug (fun m -> m "signed notify %a axfr %a"
+                             Domain_name.pp zone Ipaddr.pp ip);
+                Ok (Domain_name.Host_map.add zone (st, ip, name) zones,
+                    Some (ip, buf))
+            end
+          | _, Some soa, Ok old ->
+            if Soa.newer ~old soa then
+              match ixfr t now ts zone old name with
+              | None ->
+                Log.warn (fun m -> m "signed notify %a from %a couldn't sign ixfr"
+                             Domain_name.pp zone Ipaddr.pp ip);
+                Ok (zones, None)
+              | Some (st, buf) ->
+                Log.debug (fun m -> m "signed notify %a, ixfr %a"
+                             Domain_name.pp zone Ipaddr.pp ip);
+                Ok (Domain_name.Host_map.add zone (st, ip, name) zones,
+                    Some (ip, buf))
+            else begin
+              Log.warn (fun m -> m "signed notify %a with SOA %a not newer %a"
+                           Domain_name.pp zone Soa.pp soa Soa.pp old);
+              let st = Transferred ts, ip, name in
+              Ok (Domain_name.Host_map.add zone st zones, None)
+            end
       end
     | _ ->
-      Log.warn (fun m -> m "ignoring notify %a"
-                   Packet.Question.pp (Domain_name.raw zone, typ));
+      Log.warn (fun m -> m "ignoring notify %a from %a"
+                   Packet.Question.pp (Domain_name.raw zone, typ) Ipaddr.pp ip);
       Error Rcode.FormErr
 
   let authorise_zone zones keyname header zone =
@@ -1697,7 +1694,7 @@ module Secondary = struct
           (t, zones), None, None
         | Ok zone ->
           match authorise_zone zones keyname p.Packet.header zone with
-          | Ok (Requested_ixfr (_, _, _, _), _, name) ->
+          | Ok (Requested_ixfr (_, _, _, _), ip, name) ->
             Log.warn (fun m -> m "received %a reply for %a (req IXFR, now AXFR)"
                          Rcode.pp rc Domain_name.pp zone);
             begin match axfr t now ts zone name with
