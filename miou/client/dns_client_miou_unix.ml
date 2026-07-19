@@ -11,7 +11,7 @@ module Transport = struct
 
   type io_addr =
     [ `Plaintext of Ipaddr.t * int | `Tls of Tls.Config.client * Ipaddr.t * int ]
-  
+
   type t = {
       nameservers: io_addr list
     ; proto: Dns.proto
@@ -19,7 +19,7 @@ module Transport = struct
     ; happy: stack
   }
   and stack = Happy_eyeballs_miou_unix.t
-  
+
   type context =
     { fd : [ `Udp of Miou_unix.file_descr
            | `Tcp of Miou_unix.file_descr
@@ -59,7 +59,7 @@ module Transport = struct
             error_msgf "Connection to nameservers (via TLS) impossible" end
     | `Udp ->
       let is_plaintext = function `Plaintext v -> Either.Left v | _ -> Either.Right () in
-      let[@warning "-8"] (ipaddr, port) :: _, _ = List.partition_map is_plaintext t.nameservers in
+      let[@warning "-partial-match"] (ipaddr, port) :: _, _ = List.partition_map is_plaintext t.nameservers in
       let proto_number, socket_type = Unix.((getprotobyname "udp").p_proto, SOCK_DGRAM) in
       let domain = match ipaddr with
         | Ipaddr.V4 _ -> Unix.PF_INET
@@ -77,12 +77,12 @@ module Transport = struct
       | Error exn ->
           Unix.close fd;
           error_msgf "Unexpected error: %S" (Printexc.to_string exn)
-  
+
   let nameservers { nameservers; proto; _ } = (proto, nameservers)
   let bind x f = f x
   let lift = Fun.id
   let rng = Mirage_crypto_rng.generate ?g:None
-  
+
   let connect t =
     let ( let* ) = Result.bind in
     let* ((addr, port), fd) = connect_to_nameservers t in
@@ -90,7 +90,7 @@ module Transport = struct
     match fd with
     | `Tcp _ | `Tls _ -> Ok (`Tcp, { fd; timeout= t.timeout })
     | `Udp _ -> Ok (`Udp, { fd; timeout= t.timeout })
-  
+
   let send_recv_tls ~timeout ~id fd str =
     let send () = Tls_miou_unix.write fd str in
     let recv () =
@@ -134,13 +134,13 @@ module Transport = struct
     | Error exn ->
       error_msgf "Got an unexpected exception: %s"
         (Printexc.to_string exn)
-  
+
   let send_recv { fd; timeout } str =
     if String.length str > 4 then begin
       match fd with
       | `Tls fd ->
         let id = String.get_uint16_be str 2 in
-        send_recv_tls ~timeout ~id fd str 
+        send_recv_tls ~timeout ~id fd str
       | `Udp fd | `Tcp fd ->
           let fd = Miou_unix.to_file_descr fd in
           Unix.clear_nonblock fd;
@@ -170,13 +170,13 @@ module Transport = struct
                 (Printexc.to_string exn)
     end
     else error_msgf "Invalid context (data length <= 4)"
-  
+
   let close { fd; _ } = match fd with
     | `Tcp fd | `Udp fd -> Miou_unix.close fd
     | `Tls fd -> Tls_miou_unix.close fd
-  
+
   let of_ns ns = Int64.to_float ns /. 1_000_000_000.
-  
+
   let create ?nameservers ~timeout happy =
     let proto, nameservers =
       match nameservers with
