@@ -83,10 +83,10 @@ This library is published under the 2 clause BSD license.
 
 ## Installation
 
-You first need to install [OCaml](https://ocaml.org) (at least 4.08.2) and
+You first need to install [OCaml](https://ocaml.org) (at least 4.13.1) and
 [opam](https://opam.ocaml.org), the OCaml package manager (at least 2.0.0) on
 your machine (you can use opam to install an up-to-date OCaml (`opam switch
-4.08.2`)).
+4.13.1`)).
 
 You may want to follow the [mirage installation
 instructions](https://mirage.io/wiki/install) to get `mirage` installed on your
@@ -98,8 +98,15 @@ client, resolver, cli, certify), with multiple ocamlfind libraries for the
 different backends (no optional dependencies) -- i.e. `dns-server.mirage`
 contains the MirageOS-specific DNS server code.
 
-Now the µDNS library is installed, and you can try out the examples.  Find some
-examples at the [unikernel repository](https://github.com/roburio/unikernels).
+Now the µDNS library is installed, and you can try out the examples:
+- [DNS client unikernel](https://github.com/mirage/mirage-skeleton/tree/main/applications/dns)
+- [DNS primary unikernel](https://github.com/robur-coop/dns-primary-git)
+- [DNS secondary unikernel](https://github.com/robur-coop/dns-secondary)
+- [DNS let's encrypt unikernel](https://github.com/robur-coop/dns-letsencrypt-secondary)
+- [DNS stub resolver unikernel](https://github.com/robur-coop/dns-stub)
+- [DNSvizor (DNS & DHCP server) unikernel](https://git.robur.coop/robur/dnsvizor)
+- [Effects-based OCaml Nameserver (EON)](https://github.com/RyanGibb/eon)
+- [DNS stub and recursive DNS as unikernels with OCaml 5](https://github.com/dinosaure/annuaire)
 
 ## Documentation
 
