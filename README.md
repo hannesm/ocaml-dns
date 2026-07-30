@@ -106,6 +106,7 @@ Now the µDNS library is installed, and you can try out the examples:
 - [DNS stub resolver unikernel](https://github.com/robur-coop/dns-stub)
 - [DNSvizor (DNS & DHCP server) unikernel](https://git.robur.coop/robur/dnsvizor)
 - [Effects-based OCaml Nameserver (EON)](https://github.com/RyanGibb/eon)
+- [DNS stub and recursive DNS as unikernels with OCaml 5](https://github.com/dinosaure/annuaire)
 
 ## Documentation
 
