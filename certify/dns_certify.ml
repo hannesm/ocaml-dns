@@ -56,7 +56,7 @@ let signing_request hostname ?(more_hostnames = []) key =
       X509.Signing_request.Ext.(singleton Extensions ext)
   in
   X509.(Signing_request.create
-          [Distinguished_name.(Relative_distinguished_name.singleton (CN host))]
+          [Distinguished_name.(Relative_distinguished_name.singleton (CN (Common_name.v host)))]
           ~extensions key)
 
 let dns_header rng =
